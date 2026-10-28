@@ -1,0 +1,53 @@
+image: hashicorp/terraform:1.16.4    # same version as the laptop; upgrade on purpose
+
+options:
+  max-time: 30
+
+definitions:
+  steps:
+    # ---- Read-only: format, validate and plan. Runs on every PR and before every apply.
+    - step: &plan-dev
+        name: Plan (dev)
+        oidc: true
+        script:
+          - export TF_VAR_aws_account_id=$DEV_AWS_ACCOUNT_ID
+          - export AWS_ROLE_ARN=$DEV_TF_PLAN_ROLE_ARN
+          - export AWS_WEB_IDENTITY_TOKEN_FILE=$BITBUCKET_CLONE_DIR/web-identity-token
+          - echo "$BITBUCKET_STEP_OIDC_TOKEN" > "$AWS_WEB_IDENTITY_TOKEN_FILE"
+          - cd envs/dev
+          - terraform fmt -check -recursive ../..
+          - terraform init -input=false -backend-config="bucket=acme-dev-tfstate-${TF_VAR_aws_account_id}"
+          - terraform validate
+          # wait up to 10 min for another run's state lock instead of failing at once
+          - terraform plan -input=false -lock-timeout=10m -out=tfplan          # ◀
+          - terraform show -no-color tfplan > plan.txt
+        artifacts:
+          - envs/dev/tfplan
+          - envs/dev/plan.txt
+          - modules/site-form/.build/**   # ◀ Lambda zip built during plan, needed by apply
+
+    # ---- Apply exactly the plan from the previous step (admin role, dev deployment only).
+    # Manual: after a merge, read plan.txt in the Plan step, then click "Run" here.
+    - step: &apply-dev
+        name: Apply (dev)
+        trigger: manual                  # ◀ nothing changes in AWS until someone clicks Run
+        deployment: dev                  # TF_APPLY_ROLE_ARN; token sub = {repo}:{dev env}:{step}
+        oidc: true
+        script:
+          - export TF_VAR_aws_account_id=$DEV_AWS_ACCOUNT_ID
+          - export AWS_ROLE_ARN=$TF_APPLY_ROLE_ARN
+          - export AWS_WEB_IDENTITY_TOKEN_FILE=$BITBUCKET_CLONE_DIR/web-identity-token
+          - echo "$BITBUCKET_STEP_OIDC_TOKEN" > "$AWS_WEB_IDENTITY_TOKEN_FILE"
+          - cd envs/dev
+          - terraform init -input=false -backend-config="bucket=acme-dev-tfstate-${TF_VAR_aws_account_id}"
+          - terraform apply -input=false -lock-timeout=10m tfplan              # ◀
+
+pipelines:
+  pull-requests:
+    '**':
+      - step: *plan-dev
+
+  branches:
+    main:
+      - step: *plan-dev
+      - step: *apply-dev                 # manual (trigger set in the step definition)

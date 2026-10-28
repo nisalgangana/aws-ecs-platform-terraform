@@ -1,0 +1,67 @@
+# ---------------------------------------------------------------
+# Terraform
+# ---------------------------------------------------------------
+# Provider plugins and modules downloaded by `terraform init`
+.terraform/
+
+# State files: contain resource IDs and often secrets. State lives in S3, never in git.
+*.tfstate
+*.tfstate.*
+.terraform.tfstate.lock.info
+
+# Saved plan files (can contain secrets)
+*.tfplan
+tfplan
+plan.out
+
+# Crash logs
+crash.log
+crash.*.log
+
+# Local override files (personal, not for the team)
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Terraform CLI config (can hold tokens)
+.terraformrc
+terraform.rc
+
+# Secret variable files ONLY.
+# Normal envs/*/terraform.tfvars (sizes, CIDRs, counts) SHOULD be committed.
+*.secret.tfvars
+secrets.auto.tfvars
+
+# NOTE: do NOT ignore .terraform.lock.hcl — commit it so everyone uses the same provider versions.
+
+# ---------------------------------------------------------------
+# Credentials — never commit
+# ---------------------------------------------------------------
+.aws/
+*.pem
+*.key
+*.p12
+.env
+.env.*
+
+# ---------------------------------------------------------------
+# Logs
+# ---------------------------------------------------------------
+*.log
+
+# ---------------------------------------------------------------
+# Editors / OS
+# ---------------------------------------------------------------
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+# Claude Code personal settings
+.claude/settings.local.json
+
+# Personal, not for the team
+CLAUDE.local.md
+docs/local/
+.build/
