@@ -1,0 +1,110 @@
+environment       = "preprod"
+aws_region        = "ap-south-1"
+project           = "acme"
+vpc_cidr          = "10.30.0.0/16"
+nat_gateway_count = 1 # one shared NAT + Elastic IP (allow-listed by the UAT SMS/payment sandboxes)
+timezone          = "Asia/Kolkata"
+
+# Windows are UTC. Pre-prod runs 07:00-21:00 local; keep backups and maintenance outside that.
+db = {
+  instance_class        = "db.t4g.medium"
+  allocated_storage     = 100
+  multi_az              = false # switched on for release rehearsals, then off again
+  backup_retention_days = 7
+  deletion_protection   = true
+  skip_final_snapshot   = false
+  backup_window         = "22:00-22:30"
+  maintenance_window    = "sun:22:30-sun:23:30"
+}
+
+bitbucket = {
+  oidc_provider_url   = "https://api.bitbucket.org/2.0/workspaces/your-workspace/pipelines-config/identity/oidc"
+  oidc_audience       = "ari:cloud:bitbucket::workspace/00000000-0000-0000-0000-000000000000"
+  backend_repo_uuid   = "{00000000-0000-0000-0000-000000000001}"
+  admin_web_repo_uuid = "{00000000-0000-0000-0000-000000000002}"
+  iaac_repo_uuid      = "{00000000-0000-0000-0000-000000000003}" # acme-terraform
+
+  # "preprod" deployment environment UUIDs (OIDC page → Select Environment). NOT the repo UUID.
+  backend_env_uuid   = "{00000000-0000-0000-0000-000000000021}"
+  admin_web_env_uuid = "{00000000-0000-0000-0000-000000000022}"
+  iaac_env_uuid      = "{00000000-0000-0000-0000-000000000023}"
+}
+
+hostnames = {
+  frontend = "preprod.example.com"
+  admin    = "admin-preprod.example.com"
+  api      = "api-preprod.example.com"
+}
+
+# Bootstrap toggles (see README): false → add CNAMEs → true; false → VPC origin exists → true
+certificates_validated = false
+vpc_origin_sg_ready    = false
+
+waf = {
+  managed_rules_mode = "count" # first weeks: log only; switch to "block" after reading the WAF logs
+
+  api = {
+    rate_limit_per_5_min = 2000
+    allowed_ip_cidrs     = ["203.0.113.0/24"] # office + k6 runner: never rate-limited during load tests
+  }
+
+  # The pre-prod admin panel is private: office and UAT partners only
+  admin = {
+    rate_limit_per_5_min    = 500
+    allowed_ip_cidrs        = ["203.0.113.0/24", "198.51.100.10/32"]
+    restrict_to_allowed_ips = true
+  }
+}
+
+# First image only: after the first deploy the pipeline sets the running image (ignore_changes)
+app_image_tag       = "replace-with-git-sha"
+admin_web_image_tag = "replace-with-git-sha"
+
+# Production layout at small size: api in both AZs, everything else single. Raise to prod sizes on test days.
+services = {
+  api       = { cpu = 512, memory = 1024, min_count = 2, max_count = 4 }
+  worker    = { cpu = 256, memory = 512, min_count = 1, max_count = 2 }
+  scheduler = { cpu = 256, memory = 512 }
+  admin_web = { cpu = 256, memory = 512, min_count = 1, max_count = 2 }
+}
+
+api_scheduled_scaling = {} # no peak schedule; load tests scale on CPU
+
+# Weekdays 07:00-21:00 local: RDS starts first and stops last
+office_hours = {
+  db_start_cron       = "cron(40 6 ? * MON-FRI *)"
+  services_start_cron = "cron(0 7 ? * MON-FRI *)"
+  services_stop_cron  = "cron(0 21 ? * MON-FRI *)"
+  db_stop_cron        = "cron(15 21 ? * MON-FRI *)"
+}
+
+log_retention_days      = 30
+uploads_expiration_days = 30
+container_insights      = "enabled"
+
+alert_emails             = ["ops@example.com"]
+budget_monthly_limit_usd = 250
+
+app_environment = {
+  APP_ENV                    = "staging"
+  LOG_LEVEL                  = "info"
+  OPS_TIMEZONE               = "Asia/Kolkata"
+  HTTP_PORT                  = "8080"
+  HTTP_TRUSTED_PROXY_HOPS    = "2" # CloudFront + ALB
+  AUTH_COOKIE_SECURE         = "true"
+  AUTH_ALLOWED_ORIGINS       = "https://preprod.example.com,https://admin-preprod.example.com"
+  SMS_PROVIDER               = "log"    # synthetic users: no real SMS; "gateway" with the sandbox account on UAT days
+  CUSTOMER_OTP_FIXED_CODE    = "123456" # synthetic data only; the app refuses it when APP_ENV=production
+  PAYMENT_PROVIDER           = "stripe"
+  STRIPE_PUBLISHABLE_KEY     = "pk_test_replace_me"
+  NEAREST_POINT_MAX_RADIUS_M = "25000"
+}
+
+admin_web_environment = {
+  ENVIRONMENT       = "staging"
+  ACME_API_BASE_URL = "https://api-preprod.example.com/api/v1"
+  APP_ORIGIN        = "https://admin-preprod.example.com" # must be in the API's AUTH_ALLOWED_ORIGINS
+  API_TIMEOUT_MS    = "15000"
+  PORT              = "8080"
+  HOSTNAME          = "0.0.0.0" # Next.js standalone listens on all interfaces
+}

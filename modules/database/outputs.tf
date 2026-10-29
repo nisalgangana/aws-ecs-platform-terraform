@@ -22,3 +22,13 @@ output "db_master_secret_arn" {
   description = "Secrets Manager ARN of the RDS-managed master password"
   value       = aws_db_instance.this.master_user_secret[0].secret_arn
 }
+
+output "db_arn" {
+  description = "RDS instance ARN (cross-Region backup replication, Backup plans)"
+  value       = aws_db_instance.this.arn
+}
+
+output "db_identifier" {
+  description = "RDS instance identifier (alarms, scheduler)"
+  value       = aws_db_instance.this.identifier
+}

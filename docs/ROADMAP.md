@@ -1,4 +1,4 @@
-# Roadmap — dev environment
+# Roadmap
 
 Tick a box when the step is done. Each phase ends with: `fmt` → `validate` → `plan` → commit →
 push → Pull Request to `main` → pipeline plan → review → merge (pipeline applies).
@@ -24,7 +24,7 @@ plans on PRs and applies on merge to `main`).
 - [x] `envs/dev/versions.tf`
 - [x] `envs/dev/variables.tf` (account ID with validation, region, environment, project)
 - [x] `envs/dev/providers.tf` (region, allowed_account_ids, default_tags)
-- [x] `envs/dev/terraform.tfvars` (non-secret values only)
+- [x] `envs/dev/terraform.tfvars.example` (non-secret values only; copied to the git-ignored `terraform.tfvars`)
 - [x] `terraform init` → `plan` shows **No changes**
 - [x] Guard test: wrong account ID → plan fails
 - [x] Commit (incl. `.terraform.lock.hcl`), PR `feature/setup` → `main`
@@ -123,18 +123,44 @@ plans on PRs and applies on merge to `main`).
 - [ ] Small cleanups: delete the commented debug lines in backend `deploy-ecs.sh`; update the
       `aws-cli` image comments
 
+## Phase 11 — Pre-prod and prod root modules ✅ (code) · ⏳ (accounts)
+- [x] `modules/waf`: WAFv2 web ACL for CloudFront (allow-list, geo, rate limit, 4 AWS managed
+      rule groups, count/block switch, logs with redacted headers)
+- [x] `modules/ecs-autoscaling`: target tracking (CPU, memory, requests per target) + scheduled
+      min/max actions; `ecs-service` untouched (it already ignores `desired_count`)
+- [x] `modules/db-dr-backups`: RDS cross-Region automated backups + KMS key in `ap-south-2`
+- [x] `envs/preprod`: private subnets, 1 NAT, auto scaling 2–4, office hours through scheduled
+      scaling (0/0 at night) + RDS stop, WAF in count mode, admin panel IP allow-list, $250 budget
+- [x] `envs/prod`: 2 NAT, auto scaling 2–8 with a peak floor of 4 (15:30–17:30), WAF in block
+      mode, Multi-AZ RDS with 35-day PITR + DR replication, 90-day logs, deletion protection,
+      marketing site behind `landing_site_enabled`, $1,000 budget
+- [x] Bootstrap toggles for a new account: `certificates_validated`, `vpc_origin_sg_ready`
+      (no more hand edits to the security module between applies); runbook in each env README
+- [x] Pipeline: three plans in parallel on every PR; manual applies dev → preprod → prod as
+      Bitbucket Deployments; prod plan refuses to save a plan that replaces the database;
+      `custom: drift-check`
+- [x] `terraform validate` passes for dev, preprod and prod
+- [ ] Control Tower: create `acme-preprod` and `acme-prod`, Identity Center permission sets,
+      Bitbucket deployments (`preprod`, `prod`) with their UUIDs in `terraform.tfvars`
+- [ ] Bootstrap preprod (README runbook), then prod; set `PREPROD_*` / `PROD_*` pipeline variables
+- [ ] Two quiet weeks in preprod, then `waf.managed_rules_mode = "block"`
+- [ ] Prod launch: `landing_site_enabled = true`, retire the dev landing distribution, move DNS
+- [ ] First DR drill: point-in-time restore in Hyderabad, measure RTO
+
 ---
 
 ## Next (in this order)
 - [ ] Shared `alerts@` mailbox for alarms and budgets; one root e-mail alias per AWS account
 - [ ] Phase 8 when the backend team is ready
+- [ ] Phase 11 account steps (above) once Control Tower is in
 
 ## Later
 - [ ] Control Tower on the existing organization; enroll `acme-dev`; create shared, preprod, prod
 - [ ] ECR in `acme-shared`: build once, promote the same image to preprod/prod
       (cross-account pull); admin web `NEXT_PUBLIC_*` build args must become runtime config first
-- [ ] `envs/preprod`, `envs/prod` from the same modules (+ `waf` module); prod deploys with
-      approvals and ECS blue/green or canary with alarms; `PROD_*` pipeline variables
+- [ ] Prod deploys: ECS blue/green or canary 10 % → 100 % with alarm-based rollback
+      (CodeDeploy or ECS native); today the circuit breaker rolls back a failed deployment
+- [ ] AWS Backup plan with Vault Lock for prod (compliance copy next to the RDS replication)
 - [ ] Customer web frontend `dev.example.com` (repo `acme-customer-web` not created yet; the
       CloudFront certificate already covers the name)
 - [ ] Shared deploy script (Bitbucket pipe or shared repo) instead of a copy per repo
@@ -146,4 +172,5 @@ plans on PRs and applies on merge to `main`).
 - [ ] Pin base image digests (node, distroless, aws-cli) and keep them current (Renovate)
 - [ ] `envs/dev` outputs: `*_task_definition_arn` show Terraform's first revision, not the one the
       pipeline deployed — reword or remove
-- [ ] Drift detection: a scheduled pipeline runs `plan -detailed-exitcode` and alerts on changes
+- [x] Drift detection: `custom: drift-check` runs `plan -detailed-exitcode` on all three roots
+      (schedule it nightly in Bitbucket → Pipelines → Schedules)

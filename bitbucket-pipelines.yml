@@ -3,9 +3,31 @@ image: hashicorp/terraform:1.16.4    # same version as the laptop; upgrade on pu
 options:
   max-time: 30
 
+# Promotion path: dev → preprod → prod, one saved plan per environment.
+#
+#   Pull request      plan (dev) ‖ plan (preprod) ‖ plan (prod)      read-only roles, in parallel
+#   Merge to main     the same three plans, then three MANUAL applies in order:
+#                     apply (dev) → apply (preprod) → apply (prod)
+#
+# Each apply runs exactly the plan saved by its plan step. If anything changed the state in
+# between (another merge, a bootstrap apply), Terraform refuses the stale plan: re-run the
+# pipeline. Who may click "Run" on preprod/prod is set in Bitbucket → Deployments
+# (preprod: QA lead + DevOps; prod: two approvals, admins only, deploy freeze 16:00-10:00).
+#
+# Variables (all secured):
+#   repository    DEV_AWS_ACCOUNT_ID      DEV_TF_PLAN_ROLE_ARN
+#                 PREPROD_AWS_ACCOUNT_ID  PREPROD_TF_PLAN_ROLE_ARN
+#                 PROD_AWS_ACCOUNT_ID     PROD_TF_PLAN_ROLE_ARN
+#   deployment    TF_APPLY_ROLE_ARN       one value per deployment (dev, preprod, prod)
+#
+# OIDC token sub = "{repo}:{step}" for plans, "{repo}:{deployment}:{step}" for applies, so
+# the apply role of one account cannot be assumed from another environment's step.
+
 definitions:
   steps:
-    # ---- Read-only: format, validate and plan. Runs on every PR and before every apply.
+    # =============================================================
+    # dev
+    # =============================================================
     - step: &plan-dev
         name: Plan (dev)
         oidc: true
@@ -15,23 +37,22 @@ definitions:
           - export AWS_WEB_IDENTITY_TOKEN_FILE=$BITBUCKET_CLONE_DIR/web-identity-token
           - echo "$BITBUCKET_STEP_OIDC_TOKEN" > "$AWS_WEB_IDENTITY_TOKEN_FILE"
           - cd envs/dev
+          - test -f terraform.tfvars || cp terraform.tfvars.example terraform.tfvars
           - terraform fmt -check -recursive ../..
           - terraform init -input=false -backend-config="bucket=acme-dev-tfstate-${TF_VAR_aws_account_id}"
           - terraform validate
           # wait up to 10 min for another run's state lock instead of failing at once
-          - terraform plan -input=false -lock-timeout=10m -out=tfplan          # ◀
+          - terraform plan -input=false -lock-timeout=10m -out=tfplan
           - terraform show -no-color tfplan > plan.txt
         artifacts:
           - envs/dev/tfplan
           - envs/dev/plan.txt
-          - modules/site-form/.build/**   # ◀ Lambda zip built during plan, needed by apply
+          - modules/site-form/.build/**   # Lambda zip built during plan, needed by apply
 
-    # ---- Apply exactly the plan from the previous step (admin role, dev deployment only).
-    # Manual: after a merge, read plan.txt in the Plan step, then click "Run" here.
     - step: &apply-dev
         name: Apply (dev)
-        trigger: manual                  # ◀ nothing changes in AWS until someone clicks Run
-        deployment: dev                  # TF_APPLY_ROLE_ARN; token sub = {repo}:{dev env}:{step}
+        trigger: manual                  # nothing changes in AWS until someone clicks Run
+        deployment: dev                  # TF_APPLY_ROLE_ARN of the dev deployment
         oidc: true
         script:
           - export TF_VAR_aws_account_id=$DEV_AWS_ACCOUNT_ID
@@ -40,14 +61,139 @@ definitions:
           - echo "$BITBUCKET_STEP_OIDC_TOKEN" > "$AWS_WEB_IDENTITY_TOKEN_FILE"
           - cd envs/dev
           - terraform init -input=false -backend-config="bucket=acme-dev-tfstate-${TF_VAR_aws_account_id}"
-          - terraform apply -input=false -lock-timeout=10m tfplan              # ◀
+          - terraform apply -input=false -lock-timeout=10m tfplan
+
+    # =============================================================
+    # preprod
+    # =============================================================
+    - step: &plan-preprod
+        name: Plan (preprod)
+        oidc: true
+        script:
+          - export TF_VAR_aws_account_id=$PREPROD_AWS_ACCOUNT_ID
+          - export AWS_ROLE_ARN=$PREPROD_TF_PLAN_ROLE_ARN
+          - export AWS_WEB_IDENTITY_TOKEN_FILE=$BITBUCKET_CLONE_DIR/web-identity-token
+          - echo "$BITBUCKET_STEP_OIDC_TOKEN" > "$AWS_WEB_IDENTITY_TOKEN_FILE"
+          - cd envs/preprod
+          - test -f terraform.tfvars || cp terraform.tfvars.example terraform.tfvars
+          - terraform init -input=false -backend-config="bucket=acme-preprod-tfstate-${TF_VAR_aws_account_id}"
+          - terraform validate
+          - terraform plan -input=false -lock-timeout=10m -out=tfplan
+          - terraform show -no-color tfplan > plan.txt
+        artifacts:
+          - envs/preprod/tfplan
+          - envs/preprod/plan.txt
+
+    - step: &apply-preprod
+        name: Apply (preprod)
+        trigger: manual                  # QA approval: deployment permissions in Bitbucket
+        deployment: preprod              # TF_APPLY_ROLE_ARN of the preprod deployment
+        oidc: true
+        script:
+          - export TF_VAR_aws_account_id=$PREPROD_AWS_ACCOUNT_ID
+          - export AWS_ROLE_ARN=$TF_APPLY_ROLE_ARN
+          - export AWS_WEB_IDENTITY_TOKEN_FILE=$BITBUCKET_CLONE_DIR/web-identity-token
+          - echo "$BITBUCKET_STEP_OIDC_TOKEN" > "$AWS_WEB_IDENTITY_TOKEN_FILE"
+          - cd envs/preprod
+          - terraform init -input=false -backend-config="bucket=acme-preprod-tfstate-${TF_VAR_aws_account_id}"
+          - terraform apply -input=false -lock-timeout=10m tfplan
+
+    # =============================================================
+    # prod
+    # =============================================================
+    - step: &plan-prod
+        name: Plan (prod)
+        oidc: true
+        script:
+          - export TF_VAR_aws_account_id=$PROD_AWS_ACCOUNT_ID
+          - export AWS_ROLE_ARN=$PROD_TF_PLAN_ROLE_ARN
+          - export AWS_WEB_IDENTITY_TOKEN_FILE=$BITBUCKET_CLONE_DIR/web-identity-token
+          - echo "$BITBUCKET_STEP_OIDC_TOKEN" > "$AWS_WEB_IDENTITY_TOKEN_FILE"
+          - cd envs/prod
+          - test -f terraform.tfvars || cp terraform.tfvars.example terraform.tfvars
+          - terraform init -input=false -backend-config="bucket=acme-prod-tfstate-${TF_VAR_aws_account_id}"
+          - terraform validate
+          - terraform plan -input=false -lock-timeout=10m -out=tfplan
+          - terraform show -no-color tfplan > plan.txt
+          # Guard: a prod plan that replaces or destroys the database stops here, before anyone can apply it
+          - |
+            if grep -E 'aws_db_instance\.this (must be replaced|will be destroyed)' plan.txt; then
+              echo "Prod plan replaces or destroys the RDS instance. Refusing to save it."; exit 1
+            fi
+        artifacts:
+          - envs/prod/tfplan
+          - envs/prod/plan.txt
+          - modules/site-form/.build/**   # Lambda zip built during plan, needed by apply
+
+    - step: &apply-prod
+        name: Apply (prod)
+        trigger: manual                  # two approvals + freeze window: deployment settings in Bitbucket
+        deployment: prod                 # TF_APPLY_ROLE_ARN of the prod deployment
+        oidc: true
+        script:
+          - export TF_VAR_aws_account_id=$PROD_AWS_ACCOUNT_ID
+          - export AWS_ROLE_ARN=$TF_APPLY_ROLE_ARN
+          - export AWS_WEB_IDENTITY_TOKEN_FILE=$BITBUCKET_CLONE_DIR/web-identity-token
+          - echo "$BITBUCKET_STEP_OIDC_TOKEN" > "$AWS_WEB_IDENTITY_TOKEN_FILE"
+          - cd envs/prod
+          - terraform init -input=false -backend-config="bucket=acme-prod-tfstate-${TF_VAR_aws_account_id}"
+          - terraform apply -input=false -lock-timeout=10m tfplan
 
 pipelines:
   pull-requests:
     '**':
-      - step: *plan-dev
+      - parallel:
+          - step: *plan-dev
+          - step: *plan-preprod
+          - step: *plan-prod
 
   branches:
     main:
-      - step: *plan-dev
-      - step: *apply-dev                 # manual (trigger set in the step definition)
+      - parallel:
+          - step: *plan-dev
+          - step: *plan-preprod
+          - step: *plan-prod
+      - step: *apply-dev                 # manual
+      - step: *apply-preprod             # manual, after dev is applied
+      - step: *apply-prod                # manual, after preprod is applied
+
+  # Nightly drift check: fails (and e-mails the pipeline owner) when AWS differs from main
+  custom:
+    drift-check:
+      - parallel:
+          - step:
+              <<: *plan-dev
+              name: Drift (dev)
+              script:
+                - export TF_VAR_aws_account_id=$DEV_AWS_ACCOUNT_ID
+                - export AWS_ROLE_ARN=$DEV_TF_PLAN_ROLE_ARN
+                - export AWS_WEB_IDENTITY_TOKEN_FILE=$BITBUCKET_CLONE_DIR/web-identity-token
+                - echo "$BITBUCKET_STEP_OIDC_TOKEN" > "$AWS_WEB_IDENTITY_TOKEN_FILE"
+                - cd envs/dev
+                - test -f terraform.tfvars || cp terraform.tfvars.example terraform.tfvars
+                - terraform init -input=false -backend-config="bucket=acme-dev-tfstate-${TF_VAR_aws_account_id}"
+                - terraform plan -input=false -lock-timeout=10m -detailed-exitcode
+          - step:
+              <<: *plan-preprod
+              name: Drift (preprod)
+              script:
+                - export TF_VAR_aws_account_id=$PREPROD_AWS_ACCOUNT_ID
+                - export AWS_ROLE_ARN=$PREPROD_TF_PLAN_ROLE_ARN
+                - export AWS_WEB_IDENTITY_TOKEN_FILE=$BITBUCKET_CLONE_DIR/web-identity-token
+                - echo "$BITBUCKET_STEP_OIDC_TOKEN" > "$AWS_WEB_IDENTITY_TOKEN_FILE"
+                - cd envs/preprod
+                - test -f terraform.tfvars || cp terraform.tfvars.example terraform.tfvars
+                - terraform init -input=false -backend-config="bucket=acme-preprod-tfstate-${TF_VAR_aws_account_id}"
+                - terraform plan -input=false -lock-timeout=10m -detailed-exitcode
+          - step:
+              <<: *plan-prod
+              name: Drift (prod)
+              script:
+                - export TF_VAR_aws_account_id=$PROD_AWS_ACCOUNT_ID
+                - export AWS_ROLE_ARN=$PROD_TF_PLAN_ROLE_ARN
+                - export AWS_WEB_IDENTITY_TOKEN_FILE=$BITBUCKET_CLONE_DIR/web-identity-token
+                - echo "$BITBUCKET_STEP_OIDC_TOKEN" > "$AWS_WEB_IDENTITY_TOKEN_FILE"
+                - cd envs/prod
+                - test -f terraform.tfvars || cp terraform.tfvars.example terraform.tfvars
+                - terraform init -input=false -backend-config="bucket=acme-prod-tfstate-${TF_VAR_aws_account_id}"
+                - terraform plan -input=false -lock-timeout=10m -detailed-exitcode

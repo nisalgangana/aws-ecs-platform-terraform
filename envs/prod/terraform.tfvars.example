@@ -1,0 +1,122 @@
+environment       = "prod"
+aws_region        = "ap-south-1"
+project           = "acme"
+vpc_cidr          = "10.20.0.0/16"
+nat_gateway_count = 2 # one per AZ; both Elastic IPs are allow-listed by the SMS gateway and the payment gateway
+timezone          = "Asia/Kolkata"
+
+# Windows are UTC: 21:00 UTC = 02:30 local, the quietest hour of the day
+db = {
+  instance_class        = "db.t4g.large"
+  allocated_storage     = 100
+  multi_az              = true
+  backup_retention_days = 35 # maximum point-in-time recovery window
+  deletion_protection   = true
+  skip_final_snapshot   = false
+  backup_window         = "21:00-21:30"
+  maintenance_window    = "sun:21:30-sun:22:30"
+}
+
+# Continuous copy of snapshots + transaction logs to Hyderabad
+dr = {
+  enabled        = true
+  region         = "ap-south-2"
+  retention_days = 7
+}
+
+bitbucket = {
+  oidc_provider_url   = "https://api.bitbucket.org/2.0/workspaces/your-workspace/pipelines-config/identity/oidc"
+  oidc_audience       = "ari:cloud:bitbucket::workspace/00000000-0000-0000-0000-000000000000"
+  backend_repo_uuid   = "{00000000-0000-0000-0000-000000000001}"
+  admin_web_repo_uuid = "{00000000-0000-0000-0000-000000000002}"
+  iaac_repo_uuid      = "{00000000-0000-0000-0000-000000000003}" # acme-terraform
+
+  # "prod" deployment environment UUIDs (OIDC page → Select Environment). NOT the repo UUID.
+  backend_env_uuid   = "{00000000-0000-0000-0000-000000000031}"
+  admin_web_env_uuid = "{00000000-0000-0000-0000-000000000032}"
+  iaac_env_uuid      = "{00000000-0000-0000-0000-000000000033}"
+}
+
+hostnames = {
+  frontend    = "app.example.com"
+  admin       = "admin.example.com"
+  api         = "api.example.com"
+  landing     = "example.com"
+  landing_www = "www.example.com"
+}
+
+# Bootstrap toggles (see README): false → add CNAMEs → true; false → VPC origin exists → true
+certificates_validated = false
+vpc_origin_sg_ready    = false
+
+# Marketing site: still served from the dev account. Switch on here (and off there) at launch.
+landing_site_enabled          = false
+landing_certificate_validated = false
+landing_form_emails           = ["sales@example.com"]
+landing_env_uuids             = null # { repo_uuid = "{...4}", env_uuid = "{...34}" } once the site moves here
+
+waf = {
+  managed_rules_mode = "block"
+
+  api = {
+    rate_limit_per_5_min  = 2000
+    allowed_country_codes = [] # e.g. ["IN"] once the customer base is confirmed; keep [] while merchants call from abroad
+  }
+
+  # Staff sign in from anywhere (MFA in the app); IP restriction is not practical here
+  admin = {
+    rate_limit_per_5_min    = 300
+    allowed_ip_cidrs        = []
+    restrict_to_allowed_ips = false
+  }
+}
+
+# First image only: after the first deploy the pipeline sets the running image (ignore_changes)
+app_image_tag       = "replace-with-git-sha"
+admin_web_image_tag = "replace-with-git-sha"
+
+# api: 1 vCPU / 2 GB, 2 tasks (one per AZ) → up to 8 on CPU; worker 2 → 3; admin web 2 → 4
+services = {
+  api       = { cpu = 1024, memory = 2048, min_count = 2, max_count = 8 }
+  worker    = { cpu = 512, memory = 1024, min_count = 2, max_count = 3 }
+  scheduler = { cpu = 256, memory = 512 }
+  admin_web = { cpu = 512, memory = 1024, min_count = 2, max_count = 4 }
+}
+
+# Afternoon peak: a floor of 4 api tasks from 15:30 to 17:30 local, every day
+api_scheduled_scaling = {
+  peak-start = { schedule = "cron(30 15 ? * * *)", min_capacity = 4, max_capacity = 8 }
+  peak-end   = { schedule = "cron(30 17 ? * * *)", min_capacity = 2, max_capacity = 8 }
+}
+
+office_hours = null # 24/7
+
+log_retention_days      = 90
+uploads_expiration_days = 90 # photos are not needed after 90 days (see ARCHITECTURE: no IA transition)
+container_insights      = "enhanced"
+
+alert_emails             = ["ops@example.com"]
+budget_monthly_limit_usd = 1000
+
+app_environment = {
+  APP_ENV                    = "production" # the app refuses fixed OTP codes and http origins in production
+  LOG_LEVEL                  = "info"
+  OPS_TIMEZONE               = "Asia/Kolkata"
+  HTTP_PORT                  = "8080"
+  HTTP_TRUSTED_PROXY_HOPS    = "2" # CloudFront + ALB
+  AUTH_COOKIE_SECURE         = "true"
+  AUTH_ALLOWED_ORIGINS       = "https://app.example.com,https://admin.example.com"
+  SMS_PROVIDER               = "gateway"
+  PAYMENT_PROVIDER           = "stripe"
+  STRIPE_PUBLISHABLE_KEY     = "pk_live_replace_me"
+  NEAREST_POINT_MAX_RADIUS_M = "25000"
+}
+
+admin_web_environment = {
+  ENVIRONMENT       = "production"
+  ACME_API_BASE_URL = "https://api.example.com/api/v1"
+  APP_ORIGIN        = "https://admin.example.com" # must be in the API's AUTH_ALLOWED_ORIGINS
+  API_TIMEOUT_MS    = "15000"
+  PORT              = "8080"
+  HOSTNAME          = "0.0.0.0" # Next.js standalone listens on all interfaces
+}

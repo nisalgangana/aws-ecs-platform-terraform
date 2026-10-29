@@ -30,7 +30,7 @@ variable "web_acl_arn" {
 }
 
 variable "price_class" {
-  description = "PriceClass_All serves Australia from Australian edges"
+  description = "CloudFront price class; PriceClass_All serves every viewer from the nearest edge"
   type        = string
   default     = "PriceClass_All"
 }

@@ -20,6 +20,7 @@ and the OTP code is fixed (`123456`).
 cd envs/dev
 source .env.dev
 aws sso login --sso-session acme
+cp -n terraform.tfvars.example terraform.tfvars   # then fill in the real Bitbucket UUIDs and addresses
 terraform init -backend-config="bucket=acme-dev-tfstate-${TF_VAR_aws_account_id}"
 terraform plan
 ```
@@ -39,7 +40,7 @@ static marketing site with its contact-form Lambda.
 | `versions.tf` | Terraform and AWS provider versions, S3 backend |
 | `providers.tf` | AWS provider: region, `allowed_account_ids`, default tags |
 | `variables.tf` | inputs (account ID has no default) |
-| `terraform.tfvars` | non-secret values for this environment |
+| `terraform.tfvars.example` | non-secret values for this environment with placeholder identifiers; copy to `terraform.tfvars` (git-ignored) |
 | `main.tf` | module calls |
 | `outputs.tf` | values other stacks or people need |
 | `.env.dev` | **git-ignored** — local profile and account ID |

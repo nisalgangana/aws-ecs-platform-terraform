@@ -28,10 +28,13 @@ override.tf.json
 .terraformrc
 terraform.rc
 
-# Secret variable files ONLY.
-# Normal envs/*/terraform.tfvars (sizes, CIDRs, counts) SHOULD be committed.
+# Variable files. Each environment ships a committed terraform.tfvars.example;
+# the working copy (terraform.tfvars, with the real UUIDs, IPs and e-mail addresses)
+# stays local: cp terraform.tfvars.example terraform.tfvars
+envs/*/terraform.tfvars
 *.secret.tfvars
 secrets.auto.tfvars
+*.auto.tfvars
 
 # NOTE: do NOT ignore .terraform.lock.hcl — commit it so everyone uses the same provider versions.
 

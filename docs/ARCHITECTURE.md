@@ -4,6 +4,10 @@ Source of truth for the infrastructure design. The platform is a logistics-style
 a Go API with background workers, a Next.js admin panel, a static marketing site, and a
 PostgreSQL database, all behind CloudFront.
 
+Diagrams: [AWS architecture](2_AWS_Architecture_Diagram.pdf) ·
+[CI/CD pipeline](3_CICD_Pipeline_Diagram.pdf) · [Terraform codebase](4_Terraform_Codebase_Diagram.pdf) ·
+[case study](1_AWS_Infrastructure_Case_Study.pdf) (PNG renders in [`images/`](images/)).
+
 ---
 
 ## 1. Design targets
@@ -53,7 +57,10 @@ flowchart TB
 | acme-prod *(later)* | Workloads / Prod | production + DR to Hyderabad |
 
 **Today:** AWS Organizations + IAM Identity Center are live with the management and dev accounts.
-Control Tower is added later on the same organization; `acme-dev` is then enrolled.
+Control Tower is added later on the same organization; `acme-dev` is then enrolled and
+`acme-preprod` / `acme-prod` are created from the Account Factory. Their Terraform roots are
+complete and validated ([`envs/preprod`](../envs/preprod/README.md),
+[`envs/prod`](../envs/prod/README.md)); each README has the one-time bootstrap runbook.
 
 Guardrails (target): Region deny (only `ap-south-1`, `ap-south-2`, `us-east-1`), no IAM users or
 access keys, no public S3/RDS, CloudTrail/Config/GuardDuty cannot be disabled; Prod OU also
@@ -100,17 +107,19 @@ ECS tasks → NAT gateway (Elastic IP) → SMS gateway, payment gateway, Stripe,
 
 | Item | [dev](../envs/dev/README.md) | [preprod](../envs/preprod/README.md) | [prod](../envs/prod/README.md) |
 |---|---|---|---|
-| Domain | dev.example.com | preprod.example.com | example.com |
+| Hostnames | api-dev / admin-dev / dev .example.com | api-preprod / admin-preprod / preprod .example.com | api / admin / app .example.com (+ example.com marketing site at launch) |
 | VPC | 10.10.0.0/16 | 10.30.0.0/16 | 10.20.0.0/16 |
 | AZs | 2 subnets each tier, tasks in 1 | 2 | 2 |
 | NAT | 0 (tasks get public IPs, inbound only from ALB) | 1 | 2 (one per AZ) |
-| ECS api | 0.5 vCPU × 1 | 0.5 vCPU × 2 (prod size on test days) | 1 vCPU, 2 → 4 (max 8) |
-| ECS worker / scheduler | 1 / 1 | 1 / 1 | 2 → 3 / 1 |
-| RDS | t4g.small Single-AZ, 50 GB | t4g.medium Single-AZ, 100 GB | t4g.large Multi-AZ, 100 GB + archive t4g.small |
-| Backups / DR | 7 days | 7 days | 35 days PITR, cross-Region automated backups to Hyderabad, Vault Lock |
+| ECS api | 0.5 vCPU × 1 | 0.5 vCPU, 2 → 4 on CPU (prod size on test days) | 1 vCPU / 2 GB, 2 → 8 on CPU, floor 4 at 15:30–17:30 |
+| ECS worker / admin web / scheduler | 1 / 1 / 1 | 1 → 2 / 1 → 2 / 1 | 2 → 3 / 2 → 4 / 1 |
+| WAF | – | rate limit + managed rules (count first); admin panel IP allow-list only | rate limit + managed rules (block) |
+| RDS | t4g.micro Single-AZ, 20 GB | t4g.medium Single-AZ, 100 GB (Multi-AZ on rehearsal days) | t4g.large Multi-AZ, 100 GB (+ archive t4g.small, Day 2) |
+| Backups / DR | 1 day | 7 days | 35 days PITR, cross-Region automated backups to Hyderabad (7 days), Vault Lock (later) |
 | Runs | weekdays 08:00–20:00 | weekdays 07:00–21:00 | 24/7, deploy freeze 16:00–10:00 |
+| Logs / recovery windows | 7 days / 7 days | 30 days / 30 days | 90 days / 30 days |
 | Data | synthetic | synthetic at prod volume | real (privacy law) |
-| Deploy | auto on merge | QA approval | 2 approvals + canary 10% → 100% |
+| Deploy | manual apply after merge | QA approval | 2 approvals + canary 10% → 100% (ECS canary: later) |
 | Cost / month* | ≈ $74 | ≈ $174 | ≈ $859 (≈ $239 before launch) |
 
 \* Mumbai on-demand, +10% buffer. Landing-zone overhead (Config, logs, security accounts) ≈ $40.
@@ -143,12 +152,22 @@ org CloudTrail, synthetic data outside prod.
 ## 7. Terraform design
 
 - One **root module per account**: `envs/dev`, `envs/preprod`, `envs/prod` (separate state each).
-- Reusable **modules** in `modules/`: network, security, database, ecs-service, alb, edge,
-  scheduler, … Environments differ only by variables.
+- Reusable **modules** in `modules/`: network, security, database, ecs-service, ecs-autoscaling,
+  alb, cloudfront-alb, waf, db-dr-backups, env-scheduler, … Environments differ only by variables.
+- `envs/preprod` and `envs/prod` are the same file apart from the marketing site, the DR
+  backups and the protection flags; dev keeps its cheaper layout (public subnet, no NAT).
+- New environment bootstrap is two toggles in `terraform.tfvars`: `certificates_validated`
+  (after the ACM CNAMEs exist) and `vpc_origin_sg_ready` (after CloudFront created the VPC
+  origin security group). Until then the ALB accepts the CloudFront prefix list.
+- Office hours without fighting the autoscaler: pre-prod uses **scheduled scaling actions**
+  (min/max 0/0 at night) for the autoscaled services and EventBridge Scheduler only for RDS
+  and the single `scheduler` task.
 - State: S3 backend with native locking (`use_lockfile`), one key per environment
   (later moved to `acme-shared`).
 - Account IDs never in code: `TF_VAR_aws_account_id` from `.env.<env>` (local, git-ignored) or
   Bitbucket deployment variables (pipeline). Every provider has `allowed_account_ids`.
+- Variable files: `terraform.tfvars.example` per environment is committed (placeholder UUIDs,
+  IPs, addresses); `terraform.tfvars` is git-ignored and copied from it. Secrets are in neither.
 - Tags on everything: `Project=acme`, `Env=<env>`, `ManagedBy=terraform`.
 
 ## 8. Key decisions

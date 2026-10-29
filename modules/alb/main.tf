@@ -37,15 +37,15 @@ resource "aws_lb_target_group" "app" {
 
 # HTTPS only: CloudFront (VPC origin) connects with TLS, nothing else can reach the ALB
 resource "aws_lb_listener" "https" {
-  load_balancer_arn = aws_lb.this.arn # Listener eka mona ALB ekata da
-  port              = 443             # HTTPS standard port
-  protocol          = "HTTPS"         # ALB eka TLS terminate karanawa
+  load_balancer_arn = aws_lb.this.arn
+  port              = 443
+  protocol          = "HTTPS" # TLS terminates at the ALB
   ssl_policy        = var.ssl_policy
-  certificate_arn   = var.certificate_arn # Module eka cert eka input ekak widihata gannawa
+  certificate_arn   = var.certificate_arn
 
   default_action {
     type             = "forward"
-    target_group_arn = aws_lb_target_group.app.arn # Same module eke thiyena TG eka
+    target_group_arn = aws_lb_target_group.app.arn
   }
 }
 
